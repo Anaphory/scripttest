@@ -5,6 +5,7 @@
 Helpers for testing command-line scripts
 """
 import sys
+import tempfile
 import os
 import shutil
 import shlex
@@ -115,6 +116,8 @@ class TestFileEnvironment(object):
     # for py.test
     disabled = True
 
+    marker_file = '.scripttest-test-dir.txt'
+
     def __init__(self, base_path=None, template_path=None,
                  environ=None, cwd=None, start_clear=True,
                  ignore_paths=None, ignore_hidden=True,
@@ -148,8 +151,17 @@ class TestFileEnvironment(object):
         temporary files are left using ``.assert_no_temp()``.
         """
         if base_path is None:
-            base_path = self._guess_base_path(1)
-        self.base_path = base_path
+            base_path = tempfile.mkdtemp()
+            open(os.path.join(
+                base_path, self.marker_file), "w").close()
+            self.base_path = base_path
+        elif start_clear:
+            self.base_path = base_path
+            self.clear()
+        elif not os.path.exists(base_path):
+            self.base_path = base_path
+            os.makedirs(base_path)
+
         self.template_path = template_path
         if environ is None:
             environ = os.environ.copy()
@@ -159,14 +171,10 @@ class TestFileEnvironment(object):
         self.cwd = cwd
         self.capture_temp = capture_temp
         if self.capture_temp:
-            self.temp_path = os.path.join(self.base_path, 'tmp')
+            self.temp_path = tempfile.mkdtemp()
             self.environ['TMPDIR'] = self.temp_path
         else:
             self.temp_path = None
-        if start_clear:
-            self.clear()
-        elif not os.path.exists(base_path):
-            os.makedirs(base_path)
         self.ignore_paths = ignore_paths or []
         self.ignore_hidden = ignore_hidden
         self.split_cmd = split_cmd
@@ -177,16 +185,6 @@ class TestFileEnvironment(object):
         self._assert_no_temp = assert_no_temp
 
         self.split_cmd = split_cmd
-
-    def _guess_base_path(self, stack_level):
-        frame = sys._getframe(stack_level + 1)
-        file = frame.f_globals.get('__file__')
-        if not file:
-            raise TypeError(
-                "Could not guess a base_path argument from the calling scope "
-                "(no __file__ found)")
-        dir = os.path.dirname(file)
-        return os.path.join(dir, 'test-output')
 
     def run(self, script, *args, **kw):
         """
@@ -200,6 +198,8 @@ class TestFileEnvironment(object):
             Don't raise an exception in case of errors
         ``expect_stderr``: (default ``expect_error``)
             Don't raise an exception if anything is printed to stderr
+        ``err_to_out``: (default False)
+            Redirect stderr to merge with stdout – Implies ``expect_error``
         ``stdin``: (default ``""``)
             Input to the script
         ``cwd``: (default ``self.cwd``)
@@ -218,6 +218,7 @@ class TestFileEnvironment(object):
         stdin = kw.pop('stdin', None)
         quiet = kw.pop('quiet', False)
         debug = kw.pop('debug', False)
+        redirect = kw.pop('err_to_out', False)
         if not self.temp_path:
             if 'expect_temp' in kw:
                 raise TypeError(
@@ -247,7 +248,7 @@ class TestFileEnvironment(object):
                                     env=clean_environ(self.environ))
         else:
             proc = subprocess.Popen(all, stdin=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
+                                    stderr=(subprocess.STDOUT if redirect else subprocess.PIPE),
                                     stdout=subprocess.PIPE,
                                     cwd=cwd,
                                     # see http://bugs.python.org/issue8557
@@ -259,7 +260,7 @@ class TestFileEnvironment(object):
         else:
             stdout, stderr = proc.communicate(stdin)
         stdout = string(stdout)
-        stderr = string(stderr)
+        stderr = "" if redirect else string(stderr)
 
         stdout = string(stdout).replace('\r\n', '\n')
         stderr = string(stderr).replace('\r\n', '\n')
@@ -309,9 +310,9 @@ class TestFileEnvironment(object):
         """
         Delete all the files in the base directory.
         """
-        marker_file = os.path.join(self.base_path, '.scripttest-test-dir.txt')
         if os.path.exists(self.base_path):
-            if not force and not os.path.exists(marker_file):
+            if not force and not os.path.exists(os.path.join(
+                    self.base_path, self.marker_file)):
                 sys.stderr.write(
                     'The directory %s does not appear to have been created by '
                     'ScriptTest\n' % self.base_path)
@@ -324,9 +325,7 @@ class TestFileEnvironment(object):
                     "be deleted manually" % self.base_path)
             shutil.rmtree(self.base_path, onerror=onerror)
         os.mkdir(self.base_path)
-        f = open(marker_file, 'w')
-        f.write('placeholder')
-        f.close()
+        open(os.path.join(self.base_path, self.marker_file), "w").close()
         if self.temp_path and not os.path.exists(self.temp_path):
             os.makedirs(self.temp_path)
 
